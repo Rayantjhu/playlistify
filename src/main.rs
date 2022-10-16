@@ -1,14 +1,12 @@
-#![allow(unused_imports)]
-
 mod api;
 mod conf;
 
-use crate::api::oauth::example_request;
 use crate::conf::set_env_vars;
 use std::env;
+use dotenv::dotenv;
 
 fn main() {
-    set_env_vars();
+    dotenv().ok(); // Loads all the environment variables from the .env file
 
     api::oauth::request_oath();
 }

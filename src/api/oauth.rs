@@ -1,23 +1,26 @@
-// TODO: remove when functions are complete
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use pkce;
-use std::env;
 
 use error_chain::error_chain;
 use futures::executor::block_on;
 use open;
+use reqwest::header::HeaderMap;
+use reqwest::{ RequestBuilder};
 use reqwest::Url;
-use std::io;
+use std::{env, error, io};
+use std::env::VarError;
+use std::fmt::Error;
 use std::io::Read;
 use std::process::exit;
+use std::string::ParseError;
+use serde::Deserialize;
 
-error_chain! {
-    foreign_links {
-        Io(std::io::Error);
-        HttpRequest(reqwest::Error);
-    }
+#[derive(Deserialize)]
+struct AccessTokenResponse {
+    access_token: String,
+    token_type: String,
+    scope: String,
+    expires_in: u32,
+    refresh_token: String,
 }
 
 /*
@@ -30,26 +33,37 @@ error_chain! {
         Exchange the authorization code for an Access Token.
         This can ben done by making a POST request to the /api/token endpoint
 */
-pub fn request_oath() {
-    let client_id = match env::var("CLIENT_ID") {
-        Ok(v) => v,
-        Err(e) => panic!("Environment variable {e} not defined."),
-    };
-    let redirect_uri = match env::var("REDIRECT_URI") {
-        Ok(v) => v,
-        Err(e) => panic!("Environment variable {e} not defined."),
-    };
+pub fn request_oath() -> Result<(), Box<dyn error::Error>> {
+    let client_id = env::var("CLIENT_ID")?;
+    let redirect_uri = env::var("REDIRECT_URI")?;
 
     let code_verifier = pkce::code_verifier(128);
     let code_challenge = pkce::code_challenge(&code_verifier);
     let code_verifier = std::str::from_utf8(&code_verifier).unwrap();
 
     // Step 1
-    block_on(request_user_auth(
+    let code = match block_on(request_user_auth(
         &client_id,
         &code_challenge,
         &redirect_uri,
-    ));
+    )) {
+        Ok(v) => v,
+        Err(e) => panic!("Error occurred: {}", e),
+    };
+
+
+    // Step 2
+    let access_token = match block_on(request_access_token(
+        &client_id,
+        &code_verifier,
+        &redirect_uri,
+        &code
+    )) {
+        Ok(v) => v,
+        Err(e) => panic!("Error occurred while requesting the access token: {}", e)
+    };
+
+    Ok(())
 }
 
 /// # Requests the user's authorization.
@@ -64,7 +78,6 @@ pub fn request_oath() {
 /// <br/>
 ///
 /// # Arguments
-/// * `client_id`: [`&str`](std::str) - The Client ID from the application
 /// * `code_challenge`: [`&str`](std::str) - The code challenge used for the PKCE method
 /// * `redirect_uri`: [`&str`](std::str) - The URI which the user will be redirect to once the
 ///                                         authorization has been completed
@@ -73,7 +86,11 @@ pub fn request_oath() {
 ///
 /// [`/authorize`]:https://accounts.spotify.com/authorize
 /// [`Spotify Docs`]:https://developer.spotify.com/documentation/general/guides/authorization/code-flow/
-async fn request_user_auth(client_id: &str, code_challenge: &str, redirect_uri: &str) {
+async fn request_user_auth(
+    client_id: &str,
+    code_challenge: &str,
+    redirect_uri: &str,
+) -> Result<String, Box<dyn error::Error>> {
     let state = ""; // Optional, but recommended.
 
     // The parameters used for the GET request
@@ -86,10 +103,12 @@ async fn request_user_auth(client_id: &str, code_challenge: &str, redirect_uri: 
         ("code_challenge", code_challenge),
     ];
 
+    let auth_url = env::var("SPOTIFY_API_AUTHENTICATION")?;
+
     // The URL for the GET request
-    let url = match Url::parse_with_params("https://accounts.spotify.com/authorize", &params) {
+    let url = match Url::parse_with_params(&auth_url, &params) {
         Ok(v) => v,
-        Err(e) => panic!("Cannot parse {e}"),
+        Err(e) => panic!("Cannot parse {}", e),
     };
 
     // Checking if the user wishes to authenticate or not
@@ -122,6 +141,26 @@ async fn request_user_auth(client_id: &str, code_challenge: &str, redirect_uri: 
         }
         Err(e) => println!("An error occurred while trying the open the {url}: {e}"),
     }
+
+    let mut code = String::new();
+
+    println!(
+        "\n\
+    If the authentication was successful, please enter the code that may be found in the URL.\n\
+    e.g: localhost/code?{{your_code}}\n\
+    If it wasn't successful, enter nothing: "
+    );
+
+    io::stdin()
+        .read_line(&mut code)
+        .expect("Failed to read input");
+    match code.as_str() {
+        "" => {
+            println!("Exiting program, user cancelled");
+            exit(0);
+        }
+        _ => Ok(code),
+    }
 }
 
 /// # Requests an access token
@@ -140,31 +179,53 @@ async fn request_user_auth(client_id: &str, code_challenge: &str, redirect_uri: 
 /// * `redirect_uri`: [`&str`](std::str) - The URI which the user will be redirect to once the
 /// authorization has been completed. This must equal the redirect_uri used in the authorization
 /// request
+/// * `code`: [`&str`](std::str) - The code that was retrieved from the successful authorization
 ///
 /// [`/api/token`]:https://accounts.spotify.com/api/token
-fn request_access_token(client_id: &str, code_verifier: &str, redirect_uri: &str) {
-    let grant_type = "authorization_code";
-    let code = ""; // The previously returned code from step 1
-    let redirect_uri = ""; // Used for validation, it must match the URI used in step 1
-
+async fn request_access_token(
+    client_id: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+    code: &str,
+) -> Result<AccessTokenResponse, Box<dyn error::Error>> {
     /*
     The following HTTP headers must be included:
     -   Authorization: Base 64 encoded string that contains the client ID and secret, must follow the
         format:
         Authorization: Basic <base64 encoded client_id:client_secret>
     -   Content-Type: set to application/x-www-form-urlencoded
+    "https://acounts.spotify.com/api/token
     */
-    // TODO: Implement step 2
-}
+    let params = [
+        ("code", code),
+        ("redirect_uri", redirect_uri),
+        ("grant_type", "authorization_code"),
+        ("client_id", client_id),
+        ("code_verifier", code_verifier),
+    ];
 
-// TODO: Delete when example is not needed anymore
-/// An example of a valid GET request
-pub fn example_request() -> Result<()> {
-    let mut response = reqwest::blocking::get("https://httpbin.org/get")?;
-    let mut body = String::new();
-    response.read_to_string(&mut body)?;
+    let endpoint = env::var("SPOTIFY_API_ACCESS_TOKEN")?;
+    let url = Url::parse_with_params(endpoint.as_str(), params)?;
 
-    println!("Body:\n{}", body);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Content-Type",
+        "application/x-www-form-urlencoded".parse().unwrap(),
+    );
 
-    Ok(())
+    let response = match reqwest::blocking::Client::new()
+        .post(url)
+        .headers(headers)
+        .send() {
+        Ok(v) => v,
+        Err(e) => panic!("Error occurred while requesting access token: {}", e)
+    };
+
+    if response.status().is_success() {
+        let response_object: AccessTokenResponse = response.json().unwrap();
+        return Ok(response_object)
+    }
+
+    // TODO: create my own error (response wasn't successful)
+    Err(Box::new(Error))
 }
