@@ -1,14 +1,14 @@
 #![allow(unused_imports)]
 
 mod api;
+mod conf;
+
 use crate::api::oauth::example_request;
-use std::str;
+use crate::conf::set_env_vars;
+use std::env;
 
 fn main() {
+    set_env_vars();
 
-    // match example_request() {
-    //     Ok(()) => println!("Request successfull."),
-    //     Err(_) => println!("Something went wrong!")
-    // }
-    
+    api::oauth::request_oath();
 }

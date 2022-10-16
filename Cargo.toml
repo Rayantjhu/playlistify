@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 error-chain = "0.12.4"
+futures = "0.3.24"
+open = "3.0.3"
 pkce = "0.1.1"
-rand = "0.8.5"
 reqwest = { version = "0.11.12", features = ["blocking"] }
