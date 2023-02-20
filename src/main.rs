@@ -1,12 +1,13 @@
 mod api;
-mod conf;
 
-use crate::conf::set_env_vars;
-use std::env;
 use dotenv::dotenv;
+use crate::api::oauth::get_spotify_client;
 
 fn main() {
     dotenv().ok(); // Loads all the environment variables from the .env file
 
-    api::oauth::request_oath();
+    match get_spotify_client() {
+        Ok(spotify) => spotify,
+        Err(e) => panic!("Something went wrong! {}", e)
+    };
 }
